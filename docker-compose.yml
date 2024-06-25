@@ -1,0 +1,29 @@
+# version: '3'
+services:
+  strapi:
+    build: .
+    ports:
+      - '1337:1337'
+    environment:
+      DATABASE_CLIENT: sqlite
+      DATABASE_HOST: ${DATABASE_HOST}
+      DATABASE_PORT: ${DATABASE_PORT}
+      DATABASE_NAME: ${DATABASE_NAME}
+      DATABASE_USERNAME: ${DATABASE_USERNAME}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+    volumes:
+      - .:/srv/app
+    depends_on:
+      - db
+
+  db:
+    image: mysql:5.7
+    environment:
+      SQL_DB: ${DATABASE_NAME}
+      SQL_USER: ${DATABASE_USERNAME}
+      SQL_PASSWORD: ${DATABASE_PASSWORD}
+    volumes:
+      - db_data:/var/lib/sql/data
+
+volumes:
+  db_data:
