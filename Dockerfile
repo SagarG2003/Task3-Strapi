@@ -8,10 +8,10 @@ WORKDIR /srv/app
 COPY . /srv/app
 
 # Install dependencies
-RUN npm install
+RUN npm install -g pm2
 
 # Expose the port the app runs on
 EXPOSE 1337
 
 # Start the Strapi application
-CMD ["npm", "start"]
+CMD ["pm2-runtime", "start", "npm", "--", "start"]
