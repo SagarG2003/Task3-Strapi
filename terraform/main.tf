@@ -1,56 +1,135 @@
 provider "aws" {
-  region = "ap-south-1"
+  region = "us-east-1"
 }
 
-resource "aws_instance" "strapi" {
-  ami           = "ami-0c55b159cbfafe1f0" 
-  instance_type = "t2.micro"
+resource "aws_vpc" "main" {
+  cidr_block = "10.0.0.0/16"
+}
 
-  key_name = var.key_name
+resource "aws_subnet" "public" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.1.0/24"
+  availability_zone = "us-east-1a"
 
-  user_data = <<-EOF
-              #!/bin/bash
-              # Update the package index
-              yum update -y
+  map_public_ip_on_launch = true
+}
 
-              # Install Docker
-              amazon-linux-extras install docker -y
+resource "aws_internet_gateway" "gw" {
+  vpc_id = aws_vpc.main.id
+}
 
-              # Start Docker service
-              service docker start
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
 
-              # Add the ec2-user to the docker group so you can execute Docker commands without using sudo
-              usermod -a -G docker ec2-user
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.gw.id
+  }
+}
 
-              # Install Docker Compose
-              curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-              chmod +x /usr/local/bin/docker-compose
+resource "aws_route_table_association" "a" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
 
-              # Pull the Strapi and MySQL Docker images
-              docker-compose -f /srv/app/docker-compose.yml up -d
-              EOF
+resource "aws_security_group" "ecs" {
+  vpc_id = aws_vpc.main.id
 
-  tags = {
-    Name = "StrapiInstance"
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
-  provisioner "file" {
-    source      = "docker-compose.yml"
-    destination = "/srv/app/docker-compose.yml"
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
+}
 
-  provisioner "file" {
-    source      = ".env"
-    destination = "/srv/app/.env"
-  }
+resource "aws_ecs_cluster" "main" {
+  name = "strapi-cluster"
+}
 
-  provisioner "remote-exec" {
-    inline = [
-      "docker-compose -f /srv/app/docker-compose.yml up -d"
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name = "ecs_task_execution_role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+      },
     ]
+  })
+}
+
+resource "aws_iam_policy_attachment" "ecs_task_execution_role_policy" {
+  name       = "ecs_task_execution_role_policy"
+  roles      = [aws_iam_role.ecs_task_execution_role.name]
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_ecs_task_definition" "strapi" {
+  family                   = "strapi-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  cpu                      = 256
+  memory                   = 512
+
+  container_definitions = jsonencode([
+    {
+      name = "strapi"
+      image = "533266978173.dkr.ecr.us-east-1.amazonaws.com/strapi-ecr:latest"
+      essential = true
+      portMappings = [
+        {
+          containerPort = 1337
+          hostPort      = 1337
+        }
+      ]
+    }
+  ])
+}
+
+resource "aws_ecs_service" "strapi" {
+  name            = "strapi-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.strapi.arn
+  desired_count   = 1
+
+  network_configuration {
+    subnets          = [aws_subnet.public.id]
+    security_groups  = [aws_security_group.ecs.id]
+    assign_public_ip = true
+  }
+
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
   }
 }
 
-output "instance_ip" {
-  value = aws_instance.strapi.public_ip
+resource "aws_route53_zone" "main" {
+  name = "sagar.contentecho.in"
+}
+
+resource "aws_route53_record" "strapi" {
+  zone_id = aws_route53_zone.main.zone_id
+  name    = "sagar.contentecho.in"
+  type    = "A"
+
+  alias {
+    name                   = aws_instance.strapi.public_dns
+    zone_id                = aws_instance.strapi.zone_id
+    evaluate_target_health = false
+  }
 }
